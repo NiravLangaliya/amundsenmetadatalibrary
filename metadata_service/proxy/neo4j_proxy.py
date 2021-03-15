@@ -1411,4 +1411,54 @@ class Neo4jProxy(BaseProxy):
     def get_lineage(self, *,
                     id: str,
                     resource_type: ResourceType, direction: str, depth: int) -> Lineage:
-        pass
+        
+        get_both_lineage_query = textwrap.dedent(u"""
+        MATCH (down_parent:Table)<-[downstream_len:DOWNSTREAM*..{depth_key}]-(child:Table {{key: $query_key }})-[upstream_len:UPSTREAM*..{depth_key}]->(up_parent:Table) 
+        WITH 
+        child.key as child_key
+        ,collect(distinct{{level:LENGTH(upstream_len),source:'hive',key:up_parent.key}}) AS upstream_entities
+        ,collect(distinct{{level:LENGTH(downstream_len),source:'hive',key:down_parent.key}}) AS downstream_entities 
+        RETURN 
+        collect({{
+        key:child_key,direction:"both",depth:1
+        ,upstream_entities:upstream_entities
+        ,downstream_entities:downstream_entities
+        }}) AS lineageOutput
+        """).format(depth_key=depth)
+
+        get_upstream_lineage_query  = textwrap.dedent(u"""
+        MATCH (child:Table {{key: $query_key }})-[upstream_len:UPSTREAM*..{depth_key}]->(up_parent:Table) 
+        WITH 
+        child.key as child_key
+        ,collect(distinct{{level:LENGTH(upstream_len),source:'hive',key:up_parent.key}}) AS upstream_entities
+        RETURN 
+        collect({{
+        key:child_key,direction:"both",depth:1
+        ,upstream_entities:upstream_entities
+        }}) AS lineageOutput
+        """).format(depth_key=depth)
+
+        get_downstream_lineage_query = textwrap.dedent(u"""
+        MATCH (down_parent:Table)<-[downstream_len:DOWNSTREAM*..{depth_key}]-(child:Table {{key: $query_key }})
+        WITH 
+        child.key as child_key
+        ,collect(distinct{{level:LENGTH(downstream_len),source:'hive',key:down_parent.key}}) AS downstream_entities 
+        RETURN 
+        collect({{
+        key:child_key,direction:"both",depth:1
+        ,downstream_entities:downstream_entities
+        }}) AS lineageOutput
+        """).format(depth_key=depth)
+
+        if direction == 'upstream':
+            records = self._execute_cypher_query(statement=get_upstream_lineage_query,
+                                                 param_dict={'query_key': id})
+        elif direction == 'downstream':
+            records = self._execute_cypher_query(statement=get_downstream_lineage_query,
+                                                 param_dict={'query_key': id})
+        else:
+            records = self._execute_cypher_query(statement=get_both_lineage_query,
+                                                 param_dict={'query_key': id})
+
+        result = records.single()['lineageOutput'][0]
+        return result
